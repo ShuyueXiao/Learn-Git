@@ -1,0 +1,342 @@
+---
+title: "hw-1-shuyuex2"
+author: "Shuyue Xiao"
+date: "September 5, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+Question 1:
+```{r Question 1}
+library(lubridate)
+dat <- read.csv("C:/Users/76484/Desktop/STAT430-Machine Learning for Finacial data/LOBSTER_SampleFile_AMZN_2012-06-21_10/AMZN_2012-06-21_34200000_57600000_message_10.csv", header = F)
+names(dat) <- c("Time", "Type", "OrderID", "Size", "Price", "Direction")
+head(dat)
+
+demodate <- "2012-06-21"
+options(digits.secs = 3)#to keep the decimals for millisecond information 
+dat$tStamp <- as_datetime(demodate, tz = "US/Eastern") + dat$Time
+head(dat)
+```
+
+Question 2(1):tick imbalance bars 
+```{r Question 2(1)}
+# tick imbalance bars:
+
+imbalance_tick <- function(dat)
+{
+  n <- length(dat$Price)
+  imbalance <- rep(NA, n-1)
+  #price_diff is a sequence of Pi - P(i-1), i>1
+  price_diff <- dat$Price[-1] - dat$Price[-n]
+  imbalance[1] <- sign(price_diff[1])
+  for (i in 2:(n-1)) {
+    imbalance[i] <- sign(price_diff[i])*(price_diff[i]!=0) +
+      imbalance[i-1]*(price_diff[i]==0)
+    #sign(x)=-1,0,1 if x is negative number, zero, positive number respectively.
+    #!=0 returns bool value. (a number)*TURE=a number
+    
+  }
+  imbalance
+}
+
+Tstar_tib <- function(dat, w0=10, bkw_T=5, bkw_b=5)
+{
+  nx <- dim(dat)[1]
+  b_t <- imbalance_tick(dat)
+  w0 <- max(min(which(cumsum(b_t) != 0)), w0) # fix the case when there are always 0 at the beginning
+  Tvec <- w0
+  E0T <- Tvec
+  repeat
+  {
+    T_last <- sum(Tvec) # the last T that has been calculated
+    nbt <- min(bkw_b, T_last - 1)
+    PminusP <- pracma::movavg(b_t[(T_last-nbt):T_last], n=nbt, type="e")
+    PminusP <- PminusP[length(PminusP)] # the last one is what we need
+    b_t_Expected <- E0T*abs(PminusP)
+    b_t_psum <- abs(cumsum(b_t[-(1:T_last)]))
+    if(max(b_t_psum) < b_t_Expected){break}else
+    {
+      T_new <- min(which(b_t_psum >= b_t_Expected))
+    }
+    T_last <- T_last + T_new
+    if(T_last > nx){break}else
+    {
+      Tvec <- c(Tvec, T_new)
+      nTvec <- length(Tvec)
+      if(nTvec <= 2)
+      {
+        E0T <- mean(Tvec) # not enough T for exponential weighted average, so use the mean
+      }else
+      {
+        nT <- min(bkw_T, length(Tvec)-1)
+        E0T <- pracma::movavg(Tvec[(nTvec-nT):nTvec], n=nT, type = "e")
+        E0T <- E0T[length(E0T)]
+      }
+    }
+  }
+  return(Tvec)
+}
+
+dat$Size <- as.numeric(dat$Size)
+dat$Price <- as.numeric(dat$Price)
+dat_exc <- subset(dat, Type %in% c(4,5)) ## data with transactions
+head(dat_exc)
+
+(T_tib <- Tstar_tib(dat_exc))
+
+
+
+```
+
+Question 2(2):volume imbalance bars
+```{r Question 2(2)}
+#volume imbalance bars 
+bar_time <- function(dat, tDur=1)
+{
+  t0 <- floor_date(min(dat$tStamp))
+  winIdx <- as.factor(floor((dat$tStamp - t0) / tDur))
+  H <- aggregate(dat$Price, by = list(winIdx), max)$x
+  L <- aggregate(dat$Price, by = list(winIdx), min)$x
+  O <- aggregate(dat$Price, by = list(winIdx), function(x){x[1]})$x
+  C <- aggregate(dat$Price, by = list(winIdx), function(x){x[length(x)]})$x
+  V <- aggregate(as.double(dat$Size), by = list(winIdx), sum)$x
+  list(H=H,L=L,O=O,C=C,V=V)
+}
+
+
+Tstar_vib <- function(dat, w0 = 10, bkw_T = 5, bkw_b = 5)
+{
+  nx <- dim(dat)[1]
+  b_t <- imbalance_tick(dat)
+  v_t <- bar_time(dat)$V
+  bv_t <- v_t*b_t
+  bv_t <- bv_t[1:min(length(b_t),length(v_t))]
+  w0 <- max(min(which(cumsum(bv_t) != 0)), w0) # fix the case when there are always 0 at the beginning
+  Tvec <- w0
+  E0T <- Tvec
+  
+  repeat
+  {
+    T_last <- sum(Tvec)
+    nbvt <- min(bkw_b, T_last-1)
+    PminusP <- pracma::movavg(bv_t[(T_last-nbvt):T_last], 
+                              n=nbvt, type = "e")
+    PminusP <- PminusP[length(PminusP)]
+    bv_t_Expected <- E0T*abs(PminusP)
+    bv_t_psum <- abs(cumsum(bv_t[-(1:T_last)]))
+    if(max(bv_t_psum) < bv_t_Expected)
+    {
+      break
+    }
+    else
+    {
+      T_new <- min(which(bv_t_psum >= bv_t_Expected))
+    }
+    T_last <- T_last + T_new
+    if(T_last > nx)
+    {
+      break
+    }
+    else
+    {
+      Tvec <- c(Tvec, T_new)
+      nTvec <- length(Tvec)
+      if(nTvec <= 2)
+      {
+        E0T <- mean(Tvec)
+      }
+      else
+      {
+        nT <- min(bkw_T, length(Tvec)-1)
+        E0T <- pracma::movavg(Tvec[(nTvec-nT):nTvec], 
+                              n = nT, type = "e")
+        E0T <- E0T[length(E0T)]
+      }
+    }
+  }
+  return(Tvec)
+
+}
+
+
+(T_vib <- Tstar_vib(dat_exc))
+
+
+```
+
+Question 2(3):tick run bars
+```{r Question 2(3)}
+#tick run bars:
+Tstar_trb <- function(dat, w0=10, bkw_T=5, bkw_Pb1=5)
+{
+  b_t <- imbalance_tick(dat)
+  nb <- length(b_t)
+  nx <- dim(dat)[1]
+  
+  # calculate the length of the 1st run
+  th_T <- sapply(1:nb, function(i){
+    b_t_tmp <- b_t[1:i]
+    if(sum(b_t_tmp %in% c(-1,1))==0){out <- 0}
+    else
+    {
+      out <- max(cumsum(b_t_tmp[b_t_tmp==1]), -cumsum(b_t_tmp[b_t_tmp==-1]))  
+    }
+    out
+  })
+  
+  w0 <- max(min(which(th_T != 0)), w0) # fix the case when there are always 0 at the beginning
+  w0 <- max(min(which(b_t==1)), w0) # there must be at least 1 b_t = 1 during the first window
+  Tvec <- w0
+  E0T <- T_last <- Tvec
+  Pb1 <- sum(b_t[1:w0]==1) / w0 # Pb1: Pr[b_t = 1]
+  Pb1vec <- Pb1
+  th_T_Expected <- E0T*max(Pb1, 1-Pb1)
+  while(T_last<nx)
+  {
+    T_last <- sum(Tvec) # the last T that has been calculated
+    # cat("T_last: ", T_last, "\n")
+    for(j in 1:(nb-T_last-1))
+    {
+      b_t_tmp <- b_t[(T_last+1):(T_last+j)]
+      if(sum(b_t_tmp %in% c(-1,1))==0){th_T_tmp <- 0}else
+      {
+        th_T_tmp <- max(cumsum(b_t_tmp[b_t_tmp==1]), -cumsum(b_t_tmp[b_t_tmp==-1]))
+      }
+      if(th_T_tmp >= th_T_Expected)
+      {
+        new_flag <- TRUE # new window generated!
+        T_new <- j
+        Tvec <- c(Tvec, T_new)
+        T_last <- T_last + T_new
+        
+        Pb1_new <- sum(b_t_tmp==1) / j
+        Pb1vec <- c(Pb1vec, Pb1_new)
+        break
+      }
+    }
+    
+    if(new_flag==TRUE)
+    {
+      new_flag <- FALSE
+      nTvec <- length(Tvec) # nTvec should be the same as nPb1vec
+      if(nTvec <= 2)
+      {
+        E0T <- mean(Tvec) # not enough T for exponential weighted average, so use the mean
+        Pb1 <- mean(Pb1vec)
+      }else
+      {
+        nT <- min(bkw_T, length(Tvec)-1) 
+        E0T <- pracma::movavg(Tvec[(nTvec-nT):nTvec], n=nT, type = "e")
+        E0T <- E0T[length(E0T)]
+        nPb1 <- min(bkw_Pb1, length(Tvec)-1)
+        Pb1 <- pracma::movavg(Pb1vec[(nTvec-nPb1):nTvec], n=nPb1, type = "e")
+        Pb1 <- Pb1[length(Pb1)]
+      }
+      th_T_Expected <- E0T*max(Pb1, 1-Pb1)
+    }else{break}
+  }
+  return(Tvec)
+}
+
+
+T_trb <- Tstar_trb(dat_exc)
+plot(dat_exc$Price, pch=20, xlab="ticks", ylab="Price", main="Where to sample tick runs bars?")
+abline(v=cumsum(T_trb), lwd=0.2)
+length(T_trb) / length(dat_exc$Price) 
+```
+
+Question 2(4):volume run bars
+```{r Question 2(4)}
+#volume run bars
+Tstar_vrb <- function(dat, w0=10,bkw_T=1, bkw_Pb1=2)
+{
+  b_t <- imbalance_tick(dat)
+  v_t <- bar_time(dat)$V
+  bv_t <- b_t*v_t
+  bv_t <- bv_t[1:min(length(b_t), length(v_t))]
+  nb <- length(bv_t)
+  nx <- dim(dat)[1]
+  
+  theta_T <- sapply(1:nb, function(i){
+    bv_t_tmp <- b_t[1:i]
+    if(sum(bv_t_tmp %in% c(-1,1)) == 0)
+    {out <- 0}
+    else
+    {
+      out <- max(cumsum(bv_t_tmp[bv_t_tmp == 1]), 
+                 -cumsum(bv_t_tmp[bv_t_tmp == -1]))
+    }
+    out
+  })
+  
+  w0 <- max(min(which(theta_T != 0)), w0)
+  w0 <-max(min(which(bv_t == 1)), w0)
+  Tvec <- w0
+  E0T <- T_last <- Tvec
+  Pb1 <- sum(bv_t[1:w0] == 1)/w0
+  Pb1vec <- Pb1
+  theta_T_Expected <- E0T*max(Pb1, 1-Pb1)
+  while(T_last < nx)
+  {
+    T_last <- sum(Tvec)
+    for (j in 1:(nb-T_last-1)) 
+    {
+      bv_t_tmp <- bv_t[(T_last+1):(T_last+j)]
+      if(sum(bv_t_tmp %in% c(-1,1)) == 0)
+      {theta_T_tmp <- 0}
+      else
+      {theta_T_tmp <- max(cumsum(bv_t_tmp[bv_t_tmp == 1]),
+                          -cumsum(bv_t_tmp[bv_t_tmp == -1]))
+      }
+      if(theta_T_tmp >=theta_T_Expected)
+      {
+        new_flag <- TRUE
+        T_new <- j
+        Tvec <- c(Tvec, T_new)
+        T_last <- T_last + T_new
+        Pb1_new <- sum(bv_t_tmp == 1)/j
+        Pb1vec <- c(Pb1vec, Pb1_new)
+        break
+      }
+    }
+    
+    if(new_flag == TRUE)
+    {
+      new_flag <- FALSE
+      nTvec <- length(Tvec)
+      if(nTvec <= 2)
+      {
+        E0T <- mean(Tvec)
+        Pb1 <- mean(Pb1vec)
+      }
+      else
+      {
+        nT <- min(bkw_T, length(Tvec)-1)
+        E0T <- pracma::movavg(Tvec[(nTvec-nT):nTvec], 
+                              n=nT, type = "e")
+        E0T <- E0T[length(E0T)]
+        nPb1 <- min(bkw_Pb1, length(Tvec)-1)
+        Pb1 <- pracma::movavg(Pb1vec[(nTvec-nPb1):nTvec], 
+                              n=nPb1, type = "e")
+        Pb1 <- Pb1[length(Pb1)]
+      }
+      theta_T_Expected <- E0T*max(Pb1, 1-Pb1)
+    }
+    else{break}
+  }
+  return(Tvec)
+  
+}
+
+T_vrb <- Tstar_vrb(dat_exc)
+plot(dat_exc$Price, pch = 20, xlab="volume", ylab="Price", main="Where to sample volume runs bars?")
+abline(v = cumsum(T_vrb), lwd = 0.2)
+
+length(T_vrb)/length(dat_exc$Price)
+
+```
+
+Findings:
+The differences between tick imbalance bars and volume imbalance bars are theta_T. So do tick run bars and volume run bars.
