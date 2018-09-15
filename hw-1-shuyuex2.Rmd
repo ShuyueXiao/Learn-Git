@@ -340,3 +340,5 @@ length(T_vrb)/length(dat_exc$Price)
 
 Findings:
 The differences between tick imbalance bars and volume imbalance bars are theta_T. So do tick run bars and volume run bars.
+
+Warning: this is my first attempt to github
